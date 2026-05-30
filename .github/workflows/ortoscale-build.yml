@@ -1,0 +1,49 @@
+name: "[Ortoscale] Build & push to GHCR"
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "cmd/**"
+      - "pkg/**"
+      - "website/**"
+      - "go.*"
+      - "Dockerfile"
+      - ".github/workflows/ortoscale-build.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Determine version tag
+        id: version
+        run: echo "value=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ghcr.io/ortoscale/yopass:latest
+            ghcr.io/ortoscale/yopass:${{ steps.version.outputs.value }}
+          build-args: |
+            VERSION=ortoscale-${{ steps.version.outputs.value }}

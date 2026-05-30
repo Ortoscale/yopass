@@ -1,0 +1,111 @@
+name: "[Ortoscale] Sync upstream + auto-rebuild"
+
+# Runs weekly (Monday 06:00 UTC) and on manual trigger.
+# Fetches latest upstream tag from jhaals/yopass, merges it into
+# master, and creates a PR (or pushes directly if fast-forward clean).
+# If a conflict arises, opens a PR for manual review instead.
+# All events are logged as GitHub workflow run summaries.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"   # every Monday 06:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+  packages: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: git remote add upstream https://github.com/jhaals/yopass.git
+
+      - name: Fetch upstream tags
+        run: git fetch upstream --tags
+
+      - name: Determine latest upstream tag
+        id: upstream
+        run: |
+          LATEST=$(git tag --sort=-version:refname | grep -v ortoscale | head -1)
+          CURRENT=$(cat .ortoscale-upstream-version 2>/dev/null || echo "none")
+          echo "tag=$LATEST"       >> "$GITHUB_OUTPUT"
+          echo "current=$CURRENT"  >> "$GITHUB_OUTPUT"
+          echo "### Upstream sync check" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Current pinned version: \`$CURRENT\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Latest upstream tag:    \`$LATEST\`"  >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Skip if already up to date
+        if: steps.upstream.outputs.tag == steps.upstream.outputs.current
+        run: |
+          echo "Already on ${{ steps.upstream.outputs.tag }}, nothing to do." | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Attempt fast-forward merge
+        if: steps.upstream.outputs.tag != steps.upstream.outputs.current
+        id: merge
+        run: |
+          git checkout master
+          if git merge --no-edit "${{ steps.upstream.outputs.tag }}"; then
+            echo "status=ok" >> "$GITHUB_OUTPUT"
+            echo "✅ Fast-forward merge of \`${{ steps.upstream.outputs.tag }}\` succeeded." >> "$GITHUB_STEP_SUMMARY"
+          else
+            git merge --abort || true
+            echo "status=conflict" >> "$GITHUB_OUTPUT"
+            echo "⚠️ Merge conflict detected — PR will be opened for manual review." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Write upstream version pin
+        if: steps.merge.outputs.status == 'ok'
+        run: echo "${{ steps.upstream.outputs.tag }}" > .ortoscale-upstream-version
+
+      - name: Push merged master (fast-forward case)
+        if: steps.merge.outputs.status == 'ok'
+        run: |
+          git add .ortoscale-upstream-version
+          git commit --allow-empty -m "chore: sync upstream ${{ steps.upstream.outputs.tag }}"
+          git push origin master
+          echo "- Pushed merged master directly." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create conflict-resolution PR
+        if: steps.merge.outputs.status == 'conflict'
+        run: |
+          BRANCH="ortoscale/sync-upstream-${{ steps.upstream.outputs.tag }}"
+          git checkout -b "$BRANCH"
+          git merge --no-commit --no-ff "${{ steps.upstream.outputs.tag }}" || true
+          git checkout --theirs -- . 2>/dev/null || true
+          git add -A
+          git commit -m "chore: sync upstream ${{ steps.upstream.outputs.tag }} (conflict — review ortoscale patches)"
+          echo "${{ steps.upstream.outputs.tag }}" > .ortoscale-upstream-version
+          git add .ortoscale-upstream-version
+          git commit --allow-empty -m "chore: pin upstream version ${{ steps.upstream.outputs.tag }}"
+          git push origin "$BRANCH"
+          gh pr create \
+            --base master \
+            --head "$BRANCH" \
+            --title "chore: sync upstream ${{ steps.upstream.outputs.tag }} (conflict — manual review)" \
+            --body "Upstream **${{ steps.upstream.outputs.tag }}** was released. Automatic merge had conflicts.\n\nPlease review the Ortoscale patch (license cap removal in \`cmd/yopass-server/main.go\`) against this upstream version and resolve any conflicts before merging."
+          echo "- Conflict PR opened: $BRANCH" >> "$GITHUB_STEP_SUMMARY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log sync result
+        run: |
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Upstream tag | \`${{ steps.upstream.outputs.tag }}\` |"      >> "$GITHUB_STEP_SUMMARY"
+          echo "| Previous version | \`${{ steps.upstream.outputs.current }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Merge status | ${{ steps.merge.outputs.status || 'skipped' }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Triggered by | ${{ github.event_name }} |"                   >> "$GITHUB_STEP_SUMMARY"
+          echo "| Run URL | ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} |" >> "$GITHUB_STEP_SUMMARY"
