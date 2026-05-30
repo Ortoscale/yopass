@@ -289,12 +289,7 @@ func main() {
 	if err != nil {
 		logger.Fatal("invalid --max-file-size value", zap.String("value", viper.GetString("max-file-size")), zap.Error(err))
 	}
-	const maxFileSizeCap int64 = 1 * 1024 * 1024 // 1MB
-	if !licenseStatus.Valid && maxFileSize > maxFileSizeCap {
-		logger.Warn("--max-file-size exceeds 1MB cap, capping to 1MB (a valid license removes this limit)",
-			zap.String("requested", viper.GetString("max-file-size")))
-		maxFileSize = maxFileSizeCap
-	}
+	// Ortoscale fork: license cap removed — max-file-size is unrestricted.
 
 	db, err := setupDatabase(logger)
 	if err != nil {
